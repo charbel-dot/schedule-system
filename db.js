@@ -3,10 +3,9 @@
  *
  * Two interchangeable backends, chosen automatically at startup:
  *
- *   • Upstash Redis (REST) — used when UPSTASH_REDIS_REST_URL / _TOKEN
- *     (or Vercel KV's KV_REST_API_URL / _TOKEN) are present. This is what runs
- *     on Vercel, where the filesystem is read-only and process memory is not
- *     shared between invocations.
+ *   • Upstash Redis (REST) — used when Redis REST credentials are present.
+ *     This is what runs on Vercel, where the filesystem is read-only and
+ *     process memory is not shared between invocations.
  *
  *   • Local JSON file — used for zero-setup local development when no Redis
  *     credentials are present. Data lives in data.json next to this file.
@@ -17,8 +16,23 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
-const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+// Resolve Redis credentials across the various names the Upstash / Vercel KV
+// integrations use. Vercel prefixes integration vars with the store name
+// (e.g. DB_KV_REST_API_URL), so match by suffix as well as exact name.
+function findEnv(suffix, { exclude } = {}) {
+  if (process.env[suffix]) return process.env[suffix];
+  for (const [key, val] of Object.entries(process.env)) {
+    if (val && key.endsWith('_' + suffix) && !(exclude && exclude.test(key))) return val;
+  }
+  return undefined;
+}
+
+const REDIS_URL =
+  findEnv('UPSTASH_REDIS_REST_URL') || findEnv('KV_REST_API_URL');
+// Must be the read-WRITE token — never the *_READ_ONLY_TOKEN variant.
+const REDIS_TOKEN =
+  findEnv('UPSTASH_REDIS_REST_TOKEN', { exclude: /READ_ONLY/ }) ||
+  findEnv('KV_REST_API_TOKEN', { exclude: /READ_ONLY/ });
 const useRedis = Boolean(REDIS_URL && REDIS_TOKEN);
 
 let redis = null;
