@@ -1,11 +1,15 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "echo \"No build step — static assets are served as-is\"",
+  "outputDirectory": "public",
   "functions": {
     "api/index.js": {
       "includeFiles": "public/**"
     }
   },
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index.js" }
+    { "source": "/worker", "destination": "/worker.html" },
+    { "source": "/api/(.*)", "destination": "/api/index.js" }
   ]
 }
