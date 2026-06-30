@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0369a1" />
+  <title>My Jobs — New Tronics</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230369a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2'/%3E%3Cline x1='16' y1='2' x2='16' y2='6'/%3E%3Cline x1='8' y1='2' x2='8' y2='6'/%3E%3Cline x1='3' y1='10' x2='21' y2='10'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { background: var(--bg-grad); }
+    .wrap { max-width: 480px; margin: 0 auto; padding: 18px 16px calc(50px + env(safe-area-inset-bottom)); }
+    .wtop { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+    .wtop .brand { font-size:17px; }
+    .wtop .brand .logo { width:30px; height:30px; }
+    .wgreet { font-size:22px; font-weight:700; letter-spacing:-.02em; margin:14px 0 2px; }
+    .job { background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:18px; margin-bottom:14px; box-shadow:var(--shadow-sm); }
+    .job h3 { margin:0 0 3px; font-size:17px; letter-spacing:-.01em; }
+    .job .addr { display:flex; align-items:flex-start; gap:6px; color:var(--muted); font-size:13px; margin-bottom:14px; }
+    .job .addr svg { width:15px; height:15px; flex:none; margin-top:2px; color:var(--muted-2); }
+    .job .meta { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+    .job .meta .start { display:inline-flex; align-items:center; gap:5px; color:var(--muted); font-size:13px; font-family:"Fira Code", monospace; }
+    .job .meta .start svg { width:14px; height:14px; }
+    .btn.big { width:100%; padding:15px; font-size:16px; border-radius:var(--r-md); }
+    .steps { display:flex; gap:6px; margin-bottom:6px; }
+    .step { flex:1; height:7px; border-radius:99px; background:var(--surface-3); }
+    .step.done { background:var(--primary); }
+    .step-label { font-size:11.5px; color:var(--muted-2); margin-bottom:16px; font-weight:500; }
+    .note { display:flex; gap:7px; font-size:13px; color:var(--muted); background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-sm); padding:9px 11px; margin-bottom:14px; }
+    .note svg { width:15px; height:15px; flex:none; margin-top:2px; color:var(--muted-2); }
+    .done-banner { display:flex; align-items:center; justify-content:center; gap:8px; text-align:center; font-weight:600;
+      color:var(--st-completed-fg); background:var(--st-completed-bg); border-radius:var(--r-md); padding:14px; }
+    .done-banner.cancelled { color:var(--st-cancelled-fg); background:var(--st-cancelled-bg); }
+    .done-banner svg { width:18px; height:18px; }
+    .pinpad-hint { text-align:center; }
+  </style>
+</head>
+<body>
+  <div id="loadbar"></div>
+
+  <!-- PIN login -->
+  <div id="wlogin" class="login-screen">
+    <div class="login-card">
+      <div class="login-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="m9 16 2 2 4-4"/></svg>
+      </div>
+      <h1>My Jobs</h1>
+      <p class="hint">Enter your PIN to see today's work</p>
+      <form id="wform" onsubmit="event.preventDefault(); wlogin();">
+        <div class="field">
+          <label for="pin">PIN</label>
+          <input id="pin" type="tel" inputmode="numeric" autocomplete="one-time-code" placeholder="e.g. 1001" autofocus />
+        </div>
+        <button type="submit" class="btn" style="width:100%">Sign in</button>
+      </form>
+      <div class="error-text" id="werr" role="alert"></div>
+    </div>
+  </div>
+
+  <!-- Jobs -->
+  <div id="wapp" class="hidden">
+    <div class="wrap">
+      <div class="wtop">
+        <div class="brand"><span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></span> New Tronics</div>
+        <button class="btn-link" onclick="wlogout()">Sign out</button>
+      </div>
+      <div class="wgreet" id="wname"></div>
+      <div class="sub" id="wdate" style="color:var(--muted);font-size:13px;margin-bottom:18px"></div>
+      <div id="wjobs"></div>
+    </div>
+  </div>
+
+  <div id="toast-root" aria-live="polite"></div>
+
+  <script src="worker.js"></script>
+</body>
+</html>

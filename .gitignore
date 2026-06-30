@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+.claude/
+# Local datastore (created on first run in file mode) — never commit real data
+data.json
+data.json.corrupt-*
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Vercel
+.vercel
+
+# Logs / OS noise
+*.log
+.DS_Store
+Thumbs.db

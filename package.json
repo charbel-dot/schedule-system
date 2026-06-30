@@ -1,0 +1,16 @@
+{
+  "name": "worker-dispatch-system",
+  "version": "1.0.0",
+  "description": "Booking & dispatch system for sending workers to job sites with live status tracking.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.34.3",
+    "express": "^4.19.2"
+  }
+}
