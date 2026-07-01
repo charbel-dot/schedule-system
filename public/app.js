@@ -29,11 +29,13 @@ function loadEnd() {
 }
 
 /* ---- api helper -------------------------------------------------------- */
-async function api(method, url, body) {
-  loadStart();
+async function api(method, url, body, opts) {
+  const silent = opts && opts.silent; // background polls don't show the loading bar
+  if (!silent) loadStart();
   try {
     const res = await fetch(url, {
       method,
+      cache: 'no-store',
       headers: { 'Content-Type': 'application/json', 'x-auth-token': TOKEN },
       body: body ? JSON.stringify(body) : undefined
     });
@@ -44,7 +46,7 @@ async function api(method, url, body) {
     }
     return res.status === 204 ? null : res.json();
   } finally {
-    loadEnd();
+    if (!silent) loadEnd();
   }
 }
 
@@ -61,6 +63,7 @@ async function doLogin() {
   }
 }
 function logout() {
+  stopAutoRefresh();
   // Best-effort server-side token revocation; the UI logs out regardless.
   if (TOKEN) fetch('/api/logout', { method: 'POST', headers: { 'x-auth-token': TOKEN } }).catch(() => {});
   TOKEN = '';
@@ -73,6 +76,7 @@ function showApp() {
   document.getElementById('app').classList.remove('hidden');
   applyCollapsed();
   go('board');
+  startAutoRefresh();
 }
 document.getElementById('login-pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
 
@@ -216,23 +220,79 @@ function skeletonCards(n) {
 let _lastRenderedView = null;
 const _reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-async function render() {
+// When true, the in-flight render came from a background poll: no loading bar,
+// no skeleton, and the DOM is only swapped if the produced HTML actually changed.
+let _silent = false;
+const _viewSig = {}; // view -> last rendered HTML, for cheap change detection
+
+async function render(opts) {
+  const silent = !!(opts && opts.silent);
+  _silent = silent;
   const el = document.getElementById('view');
-  // Show a skeleton on a real view switch so first paint isn't a blank flash.
-  if (currentView !== _lastRenderedView && !_reduceMotion) el.innerHTML = skeletonCards(4);
+  const viewChanged = currentView !== _lastRenderedView;
+  // Show a skeleton on a real (foreground) view switch so first paint isn't blank.
+  if (!silent && viewChanged && !_reduceMotion) el.innerHTML = skeletonCards(4);
   try {
-    if (currentView === 'board') await renderBoard(el);
-    else if (currentView === 'week') await renderWeek(el);
-    else if (currentView === 'map') await renderMap(el);
-    else if (currentView === 'bookings') await renderBookings(el);
-    else if (currentView === 'workers') await renderWorkers(el);
-    else if (currentView === 'sites') await renderSites(el);
-    else if (currentView === 'reports') await renderReports(el);
-    animateView(el, currentView !== _lastRenderedView);
+    if (currentView === 'map') {
+      // The map keeps a live Leaflet instance, so it manages its own DOM/diffing.
+      await renderMap(el, silent);
+    } else {
+      const html = await buildView(currentView);
+      // On a silent poll, only touch the DOM when something actually changed —
+      // this prevents flicker and never disrupts an open <select> or scroll.
+      if (!(silent && _viewSig[currentView] === html)) {
+        el.innerHTML = html;
+        _viewSig[currentView] = html;
+        animateView(el, viewChanged);
+      }
+    }
     _lastRenderedView = currentView;
   } catch (e) {
-    el.innerHTML = emptyState('alert', 'Something went wrong', e.message);
+    if (!silent) el.innerHTML = emptyState('alert', 'Something went wrong', e.message);
+    // Silent poll errors are transient — ignore and try again next tick.
   }
+}
+
+async function buildView(view) {
+  if (view === 'board') return renderBoard();
+  if (view === 'week') return renderWeek();
+  if (view === 'bookings') return renderBookings();
+  if (view === 'workers') return renderWorkers();
+  if (view === 'sites') return renderSites();
+  if (view === 'reports') return renderReports();
+  return '';
+}
+
+/* ---- live auto-refresh (polling) -------------------------------------- */
+// Vercel serverless can't hold WebSocket/SSE connections, so we poll. Cheap:
+// one read per tick, paused when the tab is hidden, skipped when unchanged.
+const POLL_MS = 5000;
+let _pollTimer = null;
+let _pollBusy = false;
+
+function startAutoRefresh() {
+  if (_pollTimer) return;
+  _pollTimer = setInterval(autoTick, POLL_MS);
+  document.addEventListener('visibilitychange', onVisible);
+}
+function stopAutoRefresh() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+  document.removeEventListener('visibilitychange', onVisible);
+}
+function onVisible() { if (!document.hidden) autoTick(); } // refresh instantly on return
+
+async function autoTick() {
+  if (!TOKEN || document.hidden || _pollBusy) return;
+  // Never disrupt an open modal or an input/select the user is actively using.
+  const modalRoot = document.getElementById('modal-root');
+  if (modalRoot && modalRoot.children.length) return;
+  const ae = document.activeElement;
+  if (ae && /^(SELECT|INPUT|TEXTAREA)$/.test(ae.tagName) &&
+      document.getElementById('view').contains(ae)) return;
+  _pollBusy = true;
+  try { await render({ silent: true }); }
+  catch (_) { /* transient — ignore */ }
+  finally { _pollBusy = false; }
 }
 
 // Fade the view in. On a real view switch we also stagger the cards and
@@ -274,8 +334,8 @@ function dateBar() {
 function setDate(d) { selectedDate = d; render(); }
 
 /* ---- BOARD ------------------------------------------------------------- */
-async function renderBoard(el) {
-  const data = await api('GET', '/api/dashboard?date=' + selectedDate);
+async function renderBoard() {
+  const data = await api('GET', '/api/dashboard?date=' + selectedDate, null, { silent: _silent });
   const s = data.summary;
   const cards = data.sites.map((site) => {
     const rows = site.bookings.map((b) => `
@@ -304,7 +364,7 @@ async function renderBoard(el) {
     </div>`;
   }).join('');
 
-  el.innerHTML = `
+  return `
     <div class="page-head">
       <div><h1>Dispatch board</h1><div class="sub">${fmtDate(selectedDate)}</div></div>
       <button class="btn" onclick="openBooking()">${svg('plus')} New booking</button>
@@ -332,9 +392,9 @@ async function changeStatus(id, status) {
 }
 
 /* ---- WEEK -------------------------------------------------------------- */
-async function renderWeek(el) {
+async function renderWeek() {
   const from = weekStart, to = addDays(weekStart, 6);
-  const list = await api('GET', `/api/bookings?from=${from}&to=${to}`);
+  const list = await api('GET', `/api/bookings?from=${from}&to=${to}`, null, { silent: _silent });
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
   const byDay = {};
   days.forEach((d) => (byDay[d] = []));
@@ -358,7 +418,7 @@ async function renderWeek(el) {
     </div>`;
   }).join('');
 
-  el.innerHTML = `
+  return `
     <div class="page-head"><div><h1>Week view</h1><div class="sub">${fmtDate(from)} – ${fmtDate(to)}</div></div>
       <button class="btn" onclick="openBooking()">${svg('plus')} New booking</button></div>
     <div class="toolbar">
@@ -376,6 +436,8 @@ function weekAdd(d) { selectedDate = d; openBooking(); }
 /* ---- MAP (Leaflet street map, offline plot fallback) ------------------- */
 let _leafletMap = null;
 let _leafletLoading = null;
+let _leafletMarkers = {}; // siteId -> marker, for in-place live updates
+let _mapSig = null;       // signature of the data the map currently shows
 
 // Load Leaflet from the CDN only when first needed. Resolves false (and we fall
 // back to the offline plot) if there's no internet, so the app never blocks.
@@ -397,22 +459,60 @@ function ensureLeaflet() {
   return _leafletLoading;
 }
 
-async function renderMap(el) {
-  const data = await api('GET', '/api/dashboard?date=' + selectedDate);
+function mapSignature(pts) {
+  return pts.map((p) => {
+    const onsite = p.bookings.filter((b) => b.status === 'on_site').length;
+    return `${p.id}:${p.lat},${p.lng}:${p.status}:${onsite}:${p.bookings.length}/${p.requiredWorkers}:${esc(p.name)}`;
+  }).join('|');
+}
+
+async function renderMap(el, silent) {
+  const data = await api('GET', '/api/dashboard?date=' + selectedDate, null, { silent });
   const pts = data.sites.filter((s) => s.lat != null && s.lng != null);
+  const sig = mapSignature(pts);
+
+  // Background poll with a live Leaflet map: update markers in place so the
+  // user's current pan/zoom is preserved. Only when something actually changed.
+  if (silent && _leafletMap && window.L) {
+    if (sig !== _mapSig) { updateLeafletMarkers(pts); _mapSig = sig; }
+    return;
+  }
+  if (silent && sig === _mapSig) return; // offline plot, nothing changed
+
   el.innerHTML = `<div class="page-head"><div><h1>Site map</h1><div class="sub">${fmtDate(selectedDate)}</div></div></div>${dateBar()}
     <div class="map-wrap"><div id="map"></div></div>${legend()}`;
   const map = document.getElementById('map');
-  if (!pts.length) { map.innerHTML = `<div class="empty" style="border:none">No sites have coordinates yet. Add lat/lng under “Sites”.</div>`; return; }
+  _leafletMap = null; _leafletMarkers = {};
+  if (!pts.length) {
+    map.innerHTML = `<div class="empty" style="border:none">No sites have coordinates yet. Add lat/lng under “Sites”.</div>`;
+    _mapSig = sig; return;
+  }
 
   // Real street map when online; otherwise the offline coordinate plot.
   const haveLeaflet = await ensureLeaflet();
   if (haveLeaflet && window.L) renderLeaflet(map, pts);
   else renderOfflinePlot(map, pts);
+  _mapSig = sig;
+}
+
+function siteColor(p) {
+  return p.status === 'active' ? '#1d9e75' : p.status === 'on_hold' ? '#ef9f27' : '#888780';
+}
+function siteIcon(p) {
+  const onsite = p.bookings.filter((b) => b.status === 'on_site').length;
+  return L.divIcon({
+    className: '', iconSize: [26, 26], iconAnchor: [13, 13],
+    html: `<div style="width:26px;height:26px;border-radius:50%;background:${siteColor(p)};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.3)">${onsite}</div>`
+  });
+}
+function sitePopup(p) {
+  const onsite = p.bookings.filter((b) => b.status === 'on_site').length;
+  return `<b>${esc(p.name)}</b><br>${esc(p.address || '')}<br>${p.bookings.length}/${p.requiredWorkers} workers · ${onsite} on-site`;
 }
 
 function renderLeaflet(mapEl, pts) {
-  if (_leafletMap) { _leafletMap.remove(); _leafletMap = null; }
+  if (_leafletMap) { _leafletMap.remove(); }
+  _leafletMarkers = {};
   const m = L.map(mapEl);
   _leafletMap = m;
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -420,19 +520,26 @@ function renderLeaflet(mapEl, pts) {
   }).addTo(m);
   const bounds = [];
   pts.forEach((p) => {
-    const onsite = p.bookings.filter((b) => b.status === 'on_site').length;
-    const color = p.status === 'active' ? '#1d9e75' : p.status === 'on_hold' ? '#ef9f27' : '#888780';
-    const icon = L.divIcon({
-      className: '', iconSize: [26, 26], iconAnchor: [13, 13],
-      html: `<div style="width:26px;height:26px;border-radius:50%;background:${color};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.3)">${onsite}</div>`
-    });
-    L.marker([p.lat, p.lng], { icon }).addTo(m)
-      .bindPopup(`<b>${esc(p.name)}</b><br>${esc(p.address || '')}<br>${p.bookings.length}/${p.requiredWorkers} workers · ${onsite} on-site`);
+    _leafletMarkers[p.id] = L.marker([p.lat, p.lng], { icon: siteIcon(p) }).addTo(m).bindPopup(sitePopup(p));
     bounds.push([p.lat, p.lng]);
   });
   if (bounds.length === 1) m.setView(bounds[0], 13);
   else m.fitBounds(bounds, { padding: [40, 40] });
   setTimeout(() => m.invalidateSize(), 100);
+}
+
+// Live update without rebuilding the map (keeps the current pan/zoom).
+function updateLeafletMarkers(pts) {
+  const seen = {};
+  pts.forEach((p) => {
+    seen[p.id] = true;
+    const mk = _leafletMarkers[p.id];
+    if (mk) { mk.setIcon(siteIcon(p)); mk.setPopupContent(sitePopup(p)); }
+    else { _leafletMarkers[p.id] = L.marker([p.lat, p.lng], { icon: siteIcon(p) }).addTo(_leafletMap).bindPopup(sitePopup(p)); }
+  });
+  Object.keys(_leafletMarkers).forEach((id) => {
+    if (!seen[id]) { _leafletMap.removeLayer(_leafletMarkers[id]); delete _leafletMarkers[id]; }
+  });
 }
 
 function renderOfflinePlot(map, pts) {
@@ -458,8 +565,8 @@ function renderOfflinePlot(map, pts) {
 }
 
 /* ---- BOOKINGS ---------------------------------------------------------- */
-async function renderBookings(el) {
-  const list = await api('GET', '/api/bookings?date=' + selectedDate);
+async function renderBookings() {
+  const list = await api('GET', '/api/bookings?date=' + selectedDate, null, { silent: _silent });
   const rows = list.map((b) => `
     <tr>
       <td>${esc(b.workerName)}</td>
@@ -472,7 +579,7 @@ async function renderBookings(el) {
         <button class="btn-link danger" onclick="deleteBooking('${b.id}')">${svg('trash')} Delete</button>
       </td>
     </tr>`).join('');
-  el.innerHTML = `<div class="page-head"><div><h1>Bookings</h1><div class="sub">${fmtDate(selectedDate)}</div></div>
+  return `<div class="page-head"><div><h1>Bookings</h1><div class="sub">${fmtDate(selectedDate)}</div></div>
     <button class="btn" onclick="openBooking()">${svg('plus')} New booking</button></div>${dateBar()}
     ${list.length ? `<div class="table-wrap"><table><thead><tr><th>Worker</th><th>Site</th><th>Start</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
       : emptyState('inbox', 'No bookings for this day', 'Create a booking to assign a worker to a site.')}`;
@@ -529,8 +636,8 @@ async function openBooking(id, presetSiteId) {
 }
 
 /* ---- WORKERS ----------------------------------------------------------- */
-async function renderWorkers(el) {
-  const list = await api('GET', '/api/workers');
+async function renderWorkers() {
+  const list = await api('GET', '/api/workers', null, { silent: _silent });
   const rows = list.map((w) => `
     <tr>
       <td>${esc(w.name)}</td>
@@ -543,7 +650,7 @@ async function renderWorkers(el) {
         <button class="btn-link danger" onclick="deleteWorker('${w.id}')">${svg('trash')} Delete</button>
       </td>
     </tr>`).join('');
-  el.innerHTML = `<div class="page-head"><div><h1>Workers</h1><div class="sub">${list.length} total</div></div>
+  return `<div class="page-head"><div><h1>Workers</h1><div class="sub">${list.length} total</div></div>
     <button class="btn" onclick="openWorker()">${svg('plus')} Add worker</button></div>
     ${list.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Phone</th><th>Availability</th><th>PIN</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
       : emptyState('users', 'No workers yet', 'Add workers and give each a login PIN for the worker app.')}`;
@@ -585,8 +692,8 @@ async function deleteWorker(id) {
 }
 
 /* ---- SITES ------------------------------------------------------------- */
-async function renderSites(el) {
-  const list = await api('GET', '/api/sites');
+async function renderSites() {
+  const list = await api('GET', '/api/sites', null, { silent: _silent });
   const rows = list.map((s) => `
     <tr>
       <td>${esc(s.name)}</td>
@@ -598,7 +705,7 @@ async function renderSites(el) {
         <button class="btn-link danger" onclick="deleteSite('${s.id}')">${svg('trash')} Delete</button>
       </td>
     </tr>`).join('');
-  el.innerHTML = `<div class="page-head"><div><h1>Sites</h1><div class="sub">${list.length} total</div></div>
+  return `<div class="page-head"><div><h1>Sites</h1><div class="sub">${list.length} total</div></div>
     <button class="btn" onclick="openSite()">${svg('plus')} Add site</button></div>
     ${list.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Address</th><th>Needed</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
       : emptyState('building', 'No sites yet', 'Add job sites so you can dispatch workers to them.')}`;
@@ -643,11 +750,11 @@ async function deleteSite(id) {
 }
 
 /* ---- REPORTS ----------------------------------------------------------- */
-async function renderReports(el) {
-  const r = await api('GET', '/api/reports');
+async function renderReports() {
+  const r = await api('GET', '/api/reports', null, { silent: _silent });
   const wRows = r.perWorker.map((w) => `<tr><td>${esc(w.name)}</td><td>${esc(w.role || '—')}</td><td>${w.jobs}</td><td>${w.hours}</td></tr>`).join('');
   const sRows = r.perSite.map((s) => `<tr><td>${esc(s.name)}</td><td><span class="tag ${s.status}">${SITE_STATUS_LABEL[s.status]}</span></td><td>${s.assigned}</td><td>${s.completed}</td></tr>`).join('');
-  el.innerHTML = `<div class="page-head"><div><h1>Reports</h1><div class="sub">All time</div></div></div>
+  return `<div class="page-head"><div><h1>Reports</h1><div class="sub">All time</div></div></div>
     <div class="metrics">
       <div class="metric accent-green"><div class="m-top">${svg('users', 'm-ico')}<span class="label">Workers</span></div><div class="value">${r.totals.workers}</div></div>
       <div class="metric"><div class="m-top">${svg('building', 'm-ico')}<span class="label">Sites</span></div><div class="value">${r.totals.sites}</div></div>

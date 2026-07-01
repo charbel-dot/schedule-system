@@ -65,10 +65,11 @@ function loadEnd() {
   b.style.transform = 'scaleX(1)';
   setTimeout(() => { if (_loadCount === 0) { b.classList.remove('active'); b.style.transform = 'scaleX(0)'; } }, 220);
 }
-async function wfetch(url, opts) {
-  loadStart();
-  try { return await fetch(url, opts); }
-  finally { loadEnd(); }
+async function wfetch(url, opts, ctl) {
+  const silent = ctl && ctl.silent; // background polls don't show the loading bar
+  if (!silent) loadStart();
+  try { return await fetch(url, Object.assign({ cache: 'no-store' }, opts)); }
+  finally { if (!silent) loadEnd(); }
 }
 
 async function wlogin() {
@@ -87,6 +88,7 @@ async function wlogin() {
   }
 }
 function wlogout() {
+  stopWorkerRefresh();
   WORKER = null;
   localStorage.removeItem('dispatch_worker');
   document.getElementById('wapp').classList.add('hidden');
@@ -101,6 +103,7 @@ function showWApp() {
   document.getElementById('wdate').textContent = new Date().toLocaleDateString(undefined,
     { weekday: 'long', day: 'numeric', month: 'long' });
   loadJobs();
+  startWorkerRefresh();
 }
 
 // Headers carrying the worker's session token for authenticated calls.
@@ -108,10 +111,19 @@ function wauth(extra) {
   return Object.assign({ 'x-worker-token': (WORKER && WORKER.token) || '' }, extra || {});
 }
 
-async function loadJobs() {
-  const res = await wfetch(`/api/worker/${WORKER.id}/bookings?date=${todayStr()}`, { headers: wauth() });
-  if (!res.ok) return wlogout();
+let _wSig = null; // signature of the jobs currently shown, for change detection
+
+async function loadJobs(opts) {
+  const silent = opts && opts.silent;
+  const res = await wfetch(`/api/worker/${WORKER.id}/bookings?date=${todayStr()}`, { headers: wauth() }, { silent });
+  if (res.status === 401) return wlogout();
+  if (!res.ok) { if (!silent) wlogout(); return; } // ignore transient errors on polls
   const { bookings } = await res.json();
+  // Only touch the DOM when the jobs actually changed — avoids flicker and
+  // never yanks a card out from under the worker's thumb on a poll.
+  const sig = JSON.stringify(bookings.map((b) => [b.id, b.status, b.startTime, b.siteName, b.siteAddress, b.notes]));
+  if (silent && sig === _wSig) return;
+  _wSig = sig;
   const container = document.getElementById('wjobs');
   if (!bookings.length) {
     container.innerHTML = `<div class="empty">${svg('inbox')}<div class="empty-title">Nothing scheduled today</div><div>You have no jobs assigned for today. Check back later.</div></div>`;
@@ -120,6 +132,26 @@ async function loadJobs() {
   container.innerHTML = bookings.map(renderJob).join('');
   // gentle stagger of job cards
   container.querySelectorAll('.job').forEach((node, i) => { node.style.animationDelay = i * 0.06 + 's'; });
+}
+
+/* ---- live auto-refresh (polling) -------------------------------------- */
+const W_POLL_MS = 5000;
+let _wPollTimer = null;
+let _wAdvancing = false; // pause polling while the worker is advancing a job
+
+function startWorkerRefresh() {
+  if (_wPollTimer) return;
+  _wPollTimer = setInterval(wTick, W_POLL_MS);
+  document.addEventListener('visibilitychange', wOnVisible);
+}
+function stopWorkerRefresh() {
+  if (_wPollTimer) { clearInterval(_wPollTimer); _wPollTimer = null; }
+  document.removeEventListener('visibilitychange', wOnVisible);
+}
+function wOnVisible() { if (!document.hidden) wTick(); }
+async function wTick() {
+  if (!WORKER || document.hidden || _wAdvancing) return;
+  try { await loadJobs({ silent: true }); } catch (_) { /* transient — ignore */ }
 }
 
 function renderJob(b) {
@@ -148,16 +180,21 @@ function renderJob(b) {
 
 async function advance(bid, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
-  const res = await wfetch(`/api/worker/${WORKER.id}/bookings/${bid}/advance`, { method: 'POST', headers: wauth() });
-  if (res.status === 401) return wlogout();
-  if (!res.ok) {
-    const e = await res.json().catch(() => ({}));
-    if (btn) btn.disabled = false;
-    return toast(e.error || 'Could not update', 'error');
+  _wAdvancing = true; // don't let a background poll re-render mid-update
+  try {
+    const res = await wfetch(`/api/worker/${WORKER.id}/bookings/${bid}/advance`, { method: 'POST', headers: wauth() });
+    if (res.status === 401) return wlogout();
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      if (btn) btn.disabled = false;
+      return toast(e.error || 'Could not update', 'error');
+    }
+    const updated = await res.json().catch(() => null);
+    if (updated) toast(W_STATUS_LABEL[updated.status] || 'Updated', 'success');
+    await loadJobs();
+  } finally {
+    _wAdvancing = false;
   }
-  const updated = await res.json().catch(() => null);
-  if (updated) toast(W_STATUS_LABEL[updated.status] || 'Updated', 'success');
-  loadJobs();
 }
 
 if (WORKER) showWApp();

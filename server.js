@@ -26,6 +26,9 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Frame-Options', 'DENY');
+  // API responses are always live data — never let a proxy/browser cache them
+  // (the apps poll these endpoints for real-time updates).
+  if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
   next();
 });
 app.use(express.static(path.join(__dirname, 'public')));
