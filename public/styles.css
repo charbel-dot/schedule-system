@@ -433,3 +433,11 @@ tbody tr:hover { background: var(--surface-2); }
   th, td { padding: 10px 12px; }
   .metrics { gap: 10px; }
 }
+
+/* ---- print (site sign-in QR) -------------------------------------------- */
+@media print {
+  body * { visibility: hidden; }
+  .qr-print-area, .qr-print-area * { visibility: visible; }
+  .qr-print-area { position: fixed; top: 40px; left: 0; right: 0; margin: 0 auto; box-shadow: none; border: none; }
+  .qr-print-area .modal-actions { display: none; }
+}

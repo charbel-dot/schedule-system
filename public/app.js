@@ -169,7 +169,8 @@ const ICON = {
   inbox: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   alert: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
-  info: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>'
+  info: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
+  qr: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3z"/><path d="M14 21h3"/><path d="M21 14v3"/><path d="M21 21h.01"/>'
 };
 function svg(name, cls) {
   return `<svg class="${cls || ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name] || ''}</svg>`;
@@ -340,9 +341,15 @@ async function renderBoard() {
   const cards = data.sites.map((site) => {
     const rows = site.bookings.map((b) => {
       const dist = b.onSiteDistanceM;
-      const distBadge = dist == null ? '' : dist <= 150
-        ? `<span class="tag active" title="Checked in ${dist}m from site">on-site ✓</span>`
-        : `<span class="tag unavailable" title="Checked in ${dist}m from site">⚠ ${dist >= 1000 ? (dist / 1000).toFixed(1) + 'km' : dist + 'm'} away</span>`;
+      const qr = b.onSiteQrVerified;
+      let distBadge = '';
+      if (dist != null || qr) {
+        const near = dist == null || dist <= 150;
+        const distText = dist == null ? '' : near ? 'on-site ✓' : `⚠ ${dist >= 1000 ? (dist / 1000).toFixed(1) + 'km' : dist + 'm'} away`;
+        const label = [distText, qr ? 'QR confirmed' : ''].filter(Boolean).join(' · ');
+        const title = [dist != null ? `Checked in ${dist}m from site` : '', qr ? 'matched the site QR code' : ''].filter(Boolean).join(' — ');
+        distBadge = `<span class="tag ${near ? 'active' : 'unavailable'}" title="${esc(title)}">${label}</span>`;
+      }
       return `
       <div class="row">
         <div class="who">${esc(b.workerName)}<small>${esc(b.workerRole || '')}${b.startTime ? ' · ' + esc(b.startTime) : ''}</small></div>
@@ -708,6 +715,7 @@ async function renderSites() {
       <td>${s.requiredWorkers}</td>
       <td><span class="tag ${s.status}">${SITE_STATUS_LABEL[s.status]}</span></td>
       <td style="text-align:right;white-space:nowrap">
+        <button class="btn-link" onclick="showSiteQr('${s.id}')">${svg('qr')} QR</button>
         <button class="btn-link" onclick="openSite('${s.id}')">${svg('edit')} Edit</button>
         <button class="btn-link danger" onclick="deleteSite('${s.id}')">${svg('trash')} Delete</button>
       </td>
@@ -754,6 +762,26 @@ async function deleteSite(id) {
   if (!confirm('Delete this site and its bookings?')) return;
   try { await api('DELETE', '/api/sites/' + id); toast('Site deleted', '', 'success'); render(); }
   catch (e) { toast('Could not delete', e.message, 'error'); }
+}
+
+// Printable sign-in QR for a site — scanning it deep-links straight to the
+// worker sign-in screen (no URL to type) and tags the check-in as QR-confirmed.
+async function showSiteQr(id) {
+  const s = (await api('GET', '/api/sites')).find((x) => x.id === id);
+  if (!s) return;
+  const url = `${location.origin}/worker?site=${encodeURIComponent(s.id)}`;
+  const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(url)}`;
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `<div class="overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal qr-print-area">
+      <h2>${esc(s.name)} — sign-in QR</h2>
+      <p class="hint" style="margin:-8px 0 16px">Print this and post it at the site entrance. Workers scan it to jump straight to sign-in — no typing a URL.</p>
+      <div style="text-align:center"><img src="${qrSrc}" width="280" height="280" alt="Sign-in QR for ${esc(s.name)}" /></div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Close</button>
+        <button class="btn" onclick="window.print()">Print</button>
+      </div>
+    </div></div>`;
 }
 
 /* ---- REPORTS ----------------------------------------------------------- */

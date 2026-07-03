@@ -13,6 +13,16 @@ const NEXT_LABEL = {
 
 let WORKER = JSON.parse(localStorage.getItem('dispatch_worker') || 'null');
 
+// A site QR code deep-links here as /worker?site=<id> — stash it for the
+// session (survives the login step) and strip it from the visible URL.
+(function captureScannedSite() {
+  const site = new URLSearchParams(location.search).get('site');
+  if (site) {
+    sessionStorage.setItem('dispatch_qr_site', site);
+    history.replaceState(null, '', location.pathname);
+  }
+})();
+
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -182,7 +192,7 @@ function renderJob(b) {
     : (b.status === 'completed' ? 'All steps complete' : STEP_LABELS[Math.max(0, idx)] || '');
   const done = b.status === 'completed' || b.status === 'cancelled';
   const nextBtn = (!done && NEXT_LABEL[b.status])
-    ? `<button class="btn big" onclick="advance('${b.id}', this, '${b.status}')">${esc(NEXT_LABEL[b.status])}</button>`
+    ? `<button class="btn big" onclick="advance('${b.id}', this, '${b.status}', '${b.siteId}')">${esc(NEXT_LABEL[b.status])}</button>`
     : b.status === 'completed'
       ? `<div class="done-banner">${svg('check')} Job complete — thank you!</div>`
       : `<div class="done-banner cancelled">${svg('x')} This job was cancelled.</div>`;
@@ -218,15 +228,19 @@ function getLocation(timeoutMs) {
   });
 }
 
-async function advance(bid, btn, status) {
+async function advance(bid, btn, status, siteId) {
   if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
   _wAdvancing = true; // don't let a background poll re-render mid-update
   try {
     const loc = GEO_ON_LEAVE.includes(status) ? await getLocation(6000) : null;
+    const scannedSite = sessionStorage.getItem('dispatch_qr_site');
+    const payload = Object.assign({}, loc);
+    if (scannedSite && scannedSite === siteId) payload.siteId = scannedSite;
+    const hasBody = Object.keys(payload).length > 0;
     const res = await wfetch(`/api/worker/${WORKER.id}/bookings/${bid}/advance`, {
       method: 'POST',
-      headers: wauth(loc ? { 'Content-Type': 'application/json' } : {}),
-      body: loc ? JSON.stringify(loc) : undefined
+      headers: wauth(hasBody ? { 'Content-Type': 'application/json' } : {}),
+      body: hasBody ? JSON.stringify(payload) : undefined
     });
     if (res.status === 401) return wlogout();
     if (!res.ok) {

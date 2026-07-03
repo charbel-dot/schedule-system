@@ -29,7 +29,7 @@ const CSP = [
   "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com",
   "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com",
-  "img-src 'self' data: https://*.tile.openstreetmap.org https://cdnjs.cloudflare.com",
+  "img-src 'self' data: https://*.tile.openstreetmap.org https://cdnjs.cloudflare.com https://api.qrserver.com",
   "connect-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",
@@ -126,10 +126,11 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
 function enrichBooking(data, settings, b) {
   const worker = find(data, 'workers', b.workerId);
   const site = find(data, 'sites', b.siteId);
-  const onSite = b.statusHistory.find((h) => h.status === 'on_site' && typeof h.lat === 'number');
-  const onSiteDistanceM = (onSite && site && typeof site.lat === 'number' && typeof site.lng === 'number')
-    ? Math.round(haversineMeters(onSite.lat, onSite.lng, site.lat, site.lng))
+  const onSiteEntry = b.statusHistory.find((h) => h.status === 'on_site');
+  const onSiteDistanceM = (onSiteEntry && typeof onSiteEntry.lat === 'number' && site && typeof site.lat === 'number' && typeof site.lng === 'number')
+    ? Math.round(haversineMeters(onSiteEntry.lat, onSiteEntry.lng, site.lat, site.lng))
     : null;
+  const onSiteQrVerified = Boolean(onSiteEntry && onSiteEntry.qrVerified);
   return {
     ...b,
     workerName: worker ? worker.name : '(removed worker)',
@@ -138,7 +139,8 @@ function enrichBooking(data, settings, b) {
     siteName: site ? site.name : '(removed site)',
     siteAddress: site ? site.address : '',
     waLink: worker && site ? whatsappLink(settings, worker, site, b) : null,
-    onSiteDistanceM
+    onSiteDistanceM,
+    onSiteQrVerified
   };
 }
 
@@ -486,6 +488,10 @@ app.post('/api/worker/:id/bookings/:bid/advance', wkr, ah(async (req, res) => {
   const entry = { status: next, at: new Date().toISOString() };
   const loc = parseLocation(req.body);
   if (loc) Object.assign(entry, loc);
+  // Soft corroborating signal, same caveat as GPS: a worker's own browser
+  // reports this, so it's not tamper-proof — just a second data point.
+  const { siteId } = req.body || {};
+  if (typeof siteId === 'string' && siteId === b.siteId) entry.qrVerified = true;
   b.statusHistory.push(entry);
   await db.saveData(data);
   res.json(enrichBooking(data, settings, b));
