@@ -373,12 +373,26 @@ app.get('/api/reports', mgr, ah(async (req, res) => {
   });
 }));
 
-/* ---- worker app (PIN login -> short-lived worker token) ---------------- */
-app.post('/api/worker/login', ah(async (req, res) => {
-  const { pin } = req.body || {};
+/* ---- worker app (name + PIN login -> short-lived worker token) --------- */
+// Public name picker for the login screen — id + name only, never phone/pin.
+app.get('/api/worker/roster', ah(async (req, res) => {
   const data = await db.getData();
-  const w = data.workers.find((x) => x.pin && x.pin === String(pin || '').trim());
-  if (!w) return res.status(401).json({ error: 'Wrong PIN' });
+  res.json(data.workers.map((w) => ({ id: w.id, name: w.name })));
+}));
+
+app.post('/api/worker/login', ah(async (req, res) => {
+  const { workerId, pin } = req.body || {};
+  const lockKey = 'worker:' + (workerId || 'unknown');
+  if (await db.isLoginLocked(lockKey)) {
+    return res.status(429).json({ error: 'Too many attempts. Wait a minute and try again.' });
+  }
+  const data = await db.getData();
+  const w = find(data, 'workers', workerId);
+  if (!w || !w.pin || w.pin !== String(pin || '').trim()) {
+    await db.registerFailedLogin(lockKey);
+    return res.status(401).json({ error: 'Wrong PIN' });
+  }
+  await db.clearLogin(lockKey);
   const token = crypto.randomUUID();
   await db.addWorkerToken(token, w.id);
   res.json({ id: w.id, name: w.name, role: w.role, token });

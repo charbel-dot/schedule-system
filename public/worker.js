@@ -72,19 +72,34 @@ async function wfetch(url, opts, ctl) {
   finally { if (!silent) loadEnd(); }
 }
 
+async function loadRoster() {
+  const sel = document.getElementById('wworker');
+  try {
+    const res = await wfetch('/api/worker/roster');
+    const roster = await res.json();
+    sel.innerHTML = '<option value="">Select your name…</option>' +
+      roster.map((w) => `<option value="${esc(w.id)}">${esc(w.name)}</option>`).join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">Couldn\'t load names</option>';
+  }
+}
+
 async function wlogin() {
+  const workerId = document.getElementById('wworker').value;
   const pin = document.getElementById('pin').value.trim();
+  const err = document.getElementById('werr');
+  if (!workerId) { err.textContent = 'Pick your name first'; return; }
   try {
     const res = await wfetch('/api/worker/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin })
+      body: JSON.stringify({ workerId, pin })
     });
-    if (!res.ok) throw new Error('Wrong PIN');
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Wrong PIN');
     WORKER = await res.json();
     localStorage.setItem('dispatch_worker', JSON.stringify(WORKER));
     showWApp();
   } catch (e) {
-    document.getElementById('werr').textContent = e.message;
+    err.textContent = e.message;
   }
 }
 function wlogout() {
@@ -93,8 +108,10 @@ function wlogout() {
   localStorage.removeItem('dispatch_worker');
   document.getElementById('wapp').classList.add('hidden');
   document.getElementById('wlogin').classList.remove('hidden');
+  loadRoster();
 }
 document.getElementById('pin').addEventListener('keydown', (e) => { if (e.key === 'Enter') wlogin(); });
+if (!WORKER) loadRoster();
 
 function showWApp() {
   document.getElementById('wlogin').classList.add('hidden');
