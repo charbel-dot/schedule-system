@@ -104,6 +104,9 @@ async function wlogin() {
 }
 function wlogout() {
   stopWorkerRefresh();
+  if (WORKER && WORKER.token) {
+    wfetch('/api/worker/logout', { method: 'POST', headers: wauth() }, { silent: true }).catch(() => {});
+  }
   WORKER = null;
   localStorage.removeItem('dispatch_worker');
   document.getElementById('wapp').classList.add('hidden');
@@ -179,7 +182,7 @@ function renderJob(b) {
     : (b.status === 'completed' ? 'All steps complete' : STEP_LABELS[Math.max(0, idx)] || '');
   const done = b.status === 'completed' || b.status === 'cancelled';
   const nextBtn = (!done && NEXT_LABEL[b.status])
-    ? `<button class="btn big" onclick="advance('${b.id}', this)">${esc(NEXT_LABEL[b.status])}</button>`
+    ? `<button class="btn big" onclick="advance('${b.id}', this, '${b.status}')">${esc(NEXT_LABEL[b.status])}</button>`
     : b.status === 'completed'
       ? `<div class="done-banner">${svg('check')} Job complete — thank you!</div>`
       : `<div class="done-banner cancelled">${svg('x')} This job was cancelled.</div>`;
@@ -195,11 +198,36 @@ function renderJob(b) {
   </div>`;
 }
 
-async function advance(bid, btn) {
+// Location only matters for arrival ("I have arrived") and departure
+// ("Leaving site") — the transitions coming FROM these statuses.
+const GEO_ON_LEAVE = ['en_route', 'on_site'];
+
+// Resolves to {lat,lng,accuracy} or null — never rejects, and never waits
+// longer than timeoutMs, so a slow/denied GPS fix never blocks the status update.
+function getLocation(timeoutMs) {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) return resolve(null);
+    let settled = false;
+    const done = (loc) => { if (!settled) { settled = true; resolve(loc); } };
+    const timer = setTimeout(() => done(null), timeoutMs);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => { clearTimeout(timer); done({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) }); },
+      () => { clearTimeout(timer); done(null); },
+      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 15000 }
+    );
+  });
+}
+
+async function advance(bid, btn, status) {
   if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
   _wAdvancing = true; // don't let a background poll re-render mid-update
   try {
-    const res = await wfetch(`/api/worker/${WORKER.id}/bookings/${bid}/advance`, { method: 'POST', headers: wauth() });
+    const loc = GEO_ON_LEAVE.includes(status) ? await getLocation(6000) : null;
+    const res = await wfetch(`/api/worker/${WORKER.id}/bookings/${bid}/advance`, {
+      method: 'POST',
+      headers: wauth(loc ? { 'Content-Type': 'application/json' } : {}),
+      body: loc ? JSON.stringify(loc) : undefined
+    });
     if (res.status === 401) return wlogout();
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));

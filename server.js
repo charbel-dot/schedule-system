@@ -22,10 +22,25 @@ const PORT = process.env.PORT || 3000;
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use(express.json({ limit: '256kb' }));
+// The site map (public/app.js) loads Leaflet + OpenStreetMap tiles from these
+// origins on demand — CSP has to allow them or the Map tab breaks.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com",
+  "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com",
+  "img-src 'self' data: https://*.tile.openstreetmap.org https://cdnjs.cloudflare.com",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "frame-ancestors 'none'"
+].join('; ');
+
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Content-Security-Policy', CSP);
   // API responses are always live data — never let a proxy/browser cache them
   // (the apps poll these endpoints for real-time updates).
   if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
@@ -97,9 +112,24 @@ function find(data, coll, id) {
   return data[coll].find((x) => x.id === id);
 }
 
+// Great-circle distance in meters — used to flag a check-in that's suspiciously
+// far from the site's registered coordinates.
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+
 function enrichBooking(data, settings, b) {
   const worker = find(data, 'workers', b.workerId);
   const site = find(data, 'sites', b.siteId);
+  const onSite = b.statusHistory.find((h) => h.status === 'on_site' && typeof h.lat === 'number');
+  const onSiteDistanceM = (onSite && site && typeof site.lat === 'number' && typeof site.lng === 'number')
+    ? Math.round(haversineMeters(onSite.lat, onSite.lng, site.lat, site.lng))
+    : null;
   return {
     ...b,
     workerName: worker ? worker.name : '(removed worker)',
@@ -107,7 +137,8 @@ function enrichBooking(data, settings, b) {
     workerPhone: worker ? worker.phone : '',
     siteName: site ? site.name : '(removed site)',
     siteAddress: site ? site.address : '',
-    waLink: worker && site ? whatsappLink(settings, worker, site, b) : null
+    waLink: worker && site ? whatsappLink(settings, worker, site, b) : null,
+    onSiteDistanceM
   };
 }
 
@@ -398,6 +429,11 @@ app.post('/api/worker/login', ah(async (req, res) => {
   res.json({ id: w.id, name: w.name, role: w.role, token });
 }));
 
+app.post('/api/worker/logout', ah(async (req, res) => {
+  await db.deleteWorkerToken(req.get('x-worker-token'));
+  res.json({ ok: true });
+}));
+
 // Worker endpoints require the worker's own token, scoped to their id.
 async function requireWorker(req, res, next) {
   const token = req.get('x-worker-token');
@@ -428,6 +464,17 @@ const WORKER_NEXT = {
   checked_out: 'completed'
 };
 
+// Optional GPS reported by the worker's browser on arrival/departure — never
+// required, just recorded when the device provides it.
+function parseLocation(body) {
+  const { lat, lng, accuracy } = body || {};
+  if (typeof lat !== 'number' || typeof lng !== 'number' || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  const loc = { lat, lng };
+  if (typeof accuracy === 'number' && Number.isFinite(accuracy)) loc.accuracy = Math.round(accuracy);
+  return loc;
+}
+
 app.post('/api/worker/:id/bookings/:bid/advance', wkr, ah(async (req, res) => {
   const data = await db.getData();
   const settings = resolveSettings(data);
@@ -436,7 +483,10 @@ app.post('/api/worker/:id/bookings/:bid/advance', wkr, ah(async (req, res) => {
   const next = WORKER_NEXT[b.status];
   if (!next) return res.status(400).json({ error: 'Nothing further to do' });
   b.status = next;
-  b.statusHistory.push({ status: next, at: new Date().toISOString() });
+  const entry = { status: next, at: new Date().toISOString() };
+  const loc = parseLocation(req.body);
+  if (loc) Object.assign(entry, loc);
+  b.statusHistory.push(entry);
   await db.saveData(data);
   res.json(enrichBooking(data, settings, b));
 }));

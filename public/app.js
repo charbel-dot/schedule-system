@@ -338,16 +338,23 @@ async function renderBoard() {
   const data = await api('GET', '/api/dashboard?date=' + selectedDate, null, { silent: _silent });
   const s = data.summary;
   const cards = data.sites.map((site) => {
-    const rows = site.bookings.map((b) => `
+    const rows = site.bookings.map((b) => {
+      const dist = b.onSiteDistanceM;
+      const distBadge = dist == null ? '' : dist <= 150
+        ? `<span class="tag active" title="Checked in ${dist}m from site">on-site ✓</span>`
+        : `<span class="tag unavailable" title="Checked in ${dist}m from site">⚠ ${dist >= 1000 ? (dist / 1000).toFixed(1) + 'km' : dist + 'm'} away</span>`;
+      return `
       <div class="row">
         <div class="who">${esc(b.workerName)}<small>${esc(b.workerRole || '')}${b.startTime ? ' · ' + esc(b.startTime) : ''}</small></div>
         <div style="display:flex;align-items:center;gap:6px">
+          ${distBadge}
           <button class="btn-link" title="Notify on WhatsApp" aria-label="Notify ${esc(b.workerName)} on WhatsApp" onclick="notify(${b.waLink ? `'${b.waLink}'` : 'null'})">${svg('whatsapp')} Notify</button>
           <select class="status-select pill-select ${b.status}" style="width:auto" aria-label="Status for ${esc(b.workerName)}" onchange="changeStatus('${b.id}', this.value)">
             ${STATUS_ORDER.map((st) => `<option value="${st}" ${st === b.status ? 'selected' : ''}>${STATUS_LABEL[st]}</option>`).join('')}
           </select>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
     const open = Math.max(0, site.requiredWorkers - site.bookings.filter((b) => b.status !== 'cancelled').length);
     const openRow = open > 0
       ? `<div class="row"><span class="slot-open">${open} slot${open > 1 ? 's' : ''} open</span>

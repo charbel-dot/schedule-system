@@ -195,6 +195,12 @@ async function getWorkerIdForToken(token) {
   return rec.workerId;
 }
 
+async function deleteWorkerToken(token) {
+  if (!token) return;
+  if (useRedis) { await redis.del(WORKER_TOKEN_PREFIX + token); return; }
+  memWorkerTokens.delete(token);
+}
+
 /* ---- login lockout ----------------------------------------------------- */
 async function isLoginLocked(ip) {
   if (useRedis) {
@@ -236,6 +242,7 @@ module.exports = {
   deleteManagerToken,
   addWorkerToken,
   getWorkerIdForToken,
+  deleteWorkerToken,
   isLoginLocked,
   registerFailedLogin,
   clearLogin
